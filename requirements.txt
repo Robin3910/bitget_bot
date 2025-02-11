@@ -1,0 +1,4 @@
+Flask==3.0.0
+python-binance==1.0.19
+requests==2.31.0
+watchdog==3.0.0 
