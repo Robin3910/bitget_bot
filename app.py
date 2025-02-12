@@ -11,22 +11,24 @@ import logging
 from logging.handlers import RotatingFileHandler
 from binance.um_futures import UMFutures as Client
 from binance.error import ClientError
-from config import BINANCE_CONFIG, WX_CONFIG
+from config import EXCHANGE_CONFIG, WX_CONFIG
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
+import bitget.bitget_api as baseApi
+import bitget.consts as bg_constants
 
 app = Flask(__name__)
 
 # 配置信息
-WX_TOKEN = WX_CONFIG['token']
+WX_TOKEN = bg_constants.WX_TOKEN
+PRODUCT_TYPE = bg_constants.PRODUCT_TYPE
 
-ip_white_list = BINANCE_CONFIG['ip_white_list']
-
+ip_white_list = bg_constants.IP_WHITE_LIST
+baseApi = baseApi.BitgetApi(bg_constants.API_KEY, bg_constants.API_SECRET, bg_constants.API_PASSPHRASE)
 client = Client(
-    BINANCE_CONFIG['key'], 
-    BINANCE_CONFIG['secret'], 
-    base_url=BINANCE_CONFIG['base_url']
+    bg_constants.API_KEY, 
+    bg_constants.API_SECRET, 
 )
 
 
@@ -52,10 +54,10 @@ def send_wx_notification(title, message):
     """
     try:
         mydata = {
-            'text': title,
+            'title': title,
             'desp': message
         }
-        requests.post(f'https://wx.xtuis.cn/{WX_TOKEN}.send', data=mydata)
+        requests.post(f'https://sctapi.ftqq.com/{WX_TOKEN}.send', data=mydata)
         logger.info('发送微信消息成功')
     except Exception as e:
         logger.error(f'发送微信消息失败: {str(e)}')
@@ -68,11 +70,11 @@ def get_decimal_places(tick_size):
 
 # 配置日志
 def setup_logger():
-    logger = logging.getLogger('grid_trader')
+    logger = logging.getLogger('bg_bot')
     logger.setLevel(logging.INFO)
     
     # 创建 rotating file handler，最大文件大小为 10MB，保留 5 个备份文件
-    handler = RotatingFileHandler('grid_trader.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+    handler = RotatingFileHandler('bg_bot.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     
@@ -83,12 +85,15 @@ logger = setup_logger()
 
 # 获取币种的精度
 try:
-    exchange_info = client.exchange_info()['symbols']
+    params = {}
+    params["symbol"] = "BTCUSDT"
+    params["productType"] = "USDT-FUTURES"
+    exchange_info = baseApi.get("/api/v2/mix/market/contracts", params)
     symbol_tick_size = {}
-    for item in exchange_info:
+    for item in exchange_info['data']:
         symbol_tick_size[item['symbol']] = {
-            'tick_size': get_decimal_places(item['filters'][0]['tickSize']),
-            'min_qty': get_decimal_places(item['filters'][1]['minQty']),
+            'tick_size': item["pricePlace"],
+            'min_qty': item["volumePlace"],
         }
 except ClientError as error:
     send_wx_notification(f'获取币种精度失败', f'获取币种精度失败，错误: {error}')
@@ -319,58 +324,58 @@ class GridTrader:
             self.monitor_thread.join()
             logger.info(f'{self.symbol} 停止价格监控')
 
-class ConfigFileHandler(FileSystemEventHandler):
-    def __init__(self):
-        self.last_modified = 0
+# class ConfigFileHandler(FileSystemEventHandler):
+#     def __init__(self):
+#         self.last_modified = 0
     
-    def on_modified(self, event):
-        if event.src_path.endswith('config.py'):
-            # 防止重复触发
-            current_time = time.time()
-            if current_time - self.last_modified < 1:  # 1秒内的修改忽略
-                return
-            self.last_modified = current_time
+#     def on_modified(self, event):
+#         if event.src_path.endswith('config.py'):
+#             # 防止重复触发
+#             current_time = time.time()
+#             if current_time - self.last_modified < 1:  # 1秒内的修改忽略
+#                 return
+#             self.last_modified = current_time
             
-            logger.info("检测到配置文件变更，重新加载配置...")
-            try:
-                # 重新加载配置模块
-                import importlib
-                import config
-                importlib.reload(config)
+#             logger.info("检测到配置文件变更，重新加载配置...")
+#             try:
+#                 # 重新加载配置模块
+#                 import importlib
+#                 import config
+#                 importlib.reload(config)
                 
-                global WX_TOKEN, ip_white_list, client
-                WX_TOKEN = config.WX_CONFIG['token']
-                ip_white_list = config.BINANCE_CONFIG['ip_white_list']
-                client = Client(
-                    config.BINANCE_CONFIG['key'],
-                    config.BINANCE_CONFIG['secret'],
-                    base_url=config.BINANCE_CONFIG['base_url']
-                )
-                logger.info("配置文件重新加载成功")
-                send_wx_notification("配置更新", "配置文件已成功重新加载")
-            except Exception as e:
-                logger.error(f"重新加载配置文件失败: {str(e)}")
-                send_wx_notification("配置更新失败", f"重新加载配置文件时发生错误: {str(e)}")
+#                 global WX_TOKEN, ip_white_list, client
+#                 WX_TOKEN = bg_constants.WX_TOKEN
+#                 ip_white_list = config.EXCHANGE_CONFIG['ip_white_list']
+#                 client = Client(
+#                     config.EXCHANGE_CONFIG['key'],
+#                     config.EXCHANGE_CONFIG['secret'],
+#                     base_url=config.EXCHANGE_CONFIG['base_url']
+#                 )
+#                 logger.info("配置文件重新加载成功")
+#                 send_wx_notification("配置更新", "配置文件已成功重新加载")
+#             except Exception as e:
+#                 logger.error(f"重新加载配置文件失败: {str(e)}")
+#                 send_wx_notification("配置更新失败", f"重新加载配置文件时发生错误: {str(e)}")
 
-def start_config_monitor():
-    event_handler = ConfigFileHandler()
-    observer = Observer()
-    # 监控配置文件所在的目录
-    config_path = os.path.dirname(os.path.abspath(__file__))
-    observer.schedule(event_handler, config_path, recursive=False)
-    observer.start()
-    logger.info("配置文件监控已启动")
+# def start_config_monitor():
+#     event_handler = ConfigFileHandler()
+#     observer = Observer()
+#     # 监控配置文件所在的目录
+#     config_path = os.path.dirname(os.path.abspath(__file__))
+#     observer.schedule(event_handler, config_path, recursive=False)
+#     observer.start()
+#     logger.info("配置文件监控已启动")
 
 # {
 #   "symbol": "BTCUSDT", // 币种
-# 	"qty_percent": 50, // 用于决定平仓数量。比如我手上有1000USDT的BTC，
-#                       50代表我只要有50%的仓位用于该平仓的逻辑。剩下的50%不要去动它
-# 	"price": 100000, // 当前的价格
-# 	"grid": "96000-97000|97000-98000|98000-99000", // 代表网格的大小。第一个网格则为[96000,97000]，第二个网格为[97000,98000]，
-#                               第三个网格为[98000,99000]，最多为三个网格
-# 	"grid_target": 75, // 触达到网格的75%位置，则设置止损位到grid_tp的位置
-# 	"grid_tp": 20, // 网格下半部分的止盈位置
-# 	"break_tp": 70, // 当价格突破网格的上线时，设置一个出场点在网格的70%的位置。
+# 	"every_zone_usdt": 0.02, // 每次区间投入的金额
+#   "loss_decrease": 0.25, // 每次区间亏损后，下一次需要降低多少比例的区间投入额
+# 	"direction": "buy/sell", // 交易方向
+#   "entry_config": "",
+#   "exit_config": "",
+#   "pos_for_trail": "", // 预留多少x%的仓位用于动态止盈
+#   "trail_active_price": 0.6, // 当价格触达区间x%时，开始动态止盈
+#   "trail_callback": 0.1, // 当价格从高点回落10%的时候，止盈出场
 # }
 # 
 @app.route('/message', methods=['POST'])
@@ -415,73 +420,6 @@ def handle_message():
         logger.error(f'设置交易参数失败: {str(e)}')
         return jsonify({"status": "error", "message": str(e)})
 
-def send_wx_message():
-    """发送微信消息"""
-    while True:
-        try:
-            # 获取当前时间
-            current_hour = datetime.now().hour
-            # 获取当前分钟
-            current_minute = datetime.now().minute
-            # 只在整点0分时发送消息
-            if current_minute != 0:
-                time.sleep(30)  # 如果不是整点,休眠1分钟后继续检查
-                continue
-            # 只在指定时间点发送消息
-            if current_hour in [0, 4, 8, 12, 16, 20]:
-                # 为每个交易对生成状态信息
-                status_messages = []
-                balance = 0
-                # 从Binance获取实时数据
-                try:
-                    response = client.balance(recvWindow=6000)
-                    for item in response:
-                        if item['asset'] == 'USDT':
-                            balance = item['balance']
-                            break
-                except ClientError as error:
-                    logger.error(
-                        "Found error. status: {}, error code: {}, error message: {}".format(
-                            error.status_code, error.error_code, error.error_message
-                        )
-                    )
-                for symbol, trader in trading_pairs.items():
-                    if trader.is_monitoring:
-                        current_price = client.mark_price(symbol)['markPrice']
-                        status_messages.append(f"""
-                                            {symbol} 交易状态:
-                                            当前币种价格: {current_price}
-                                            当前止损价格: {trader.stop_loss_price}
-                                            处于第几个网格: 第{trader.current_grid + 1}网格
-                                            当前网格大小: {trader.grids[trader.current_grid]['size']}
-                                            当前持仓数量: {trader.position_qty}
-                                            当前持仓方向: {trader.side}
-                                            当前网格边界: {trader.grids[trader.current_grid]['lower']} - {trader.grids[trader.current_grid]['upper']}
-                                            """)
-                    else:
-                        current_price = 0
-                    
-                
-                message = "\n".join(status_messages)+f"\n当前账户余额: {balance}\n" + f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                
-                mydata = {
-                    'text': '交易状态定时报告',
-                    'desp': message
-                }
-                requests.post(f'https://wx.xtuis.cn/{WX_TOKEN}.send', data=mydata)
-                logger.info('发送微信消息成功')
-            
-            # 休眠到下一个小时
-            next_hour = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-            sleep_seconds = (next_hour - datetime.now()).total_seconds()
-            time.sleep(sleep_seconds)
-            
-        except Exception as e:
-            logger.error(f'发送微信消息失败: {str(e)}')
-            time.sleep(60)  # 发生错误时等待1分钟后重试
-
-
-
 @app.before_request
 def before_req():
     logger.info(request.json)
@@ -495,12 +433,12 @@ def before_req():
 
 if __name__ == '__main__':
     # 启动配置文件监控
-    start_config_monitor()
+    # start_config_monitor()
     
     # 启动定时发送消息的线程
-    message_thread = threading.Thread(target=send_wx_message)
-    message_thread.daemon = True
-    message_thread.start()
+    # message_thread = threading.Thread(target=send_wx_message)
+    # message_thread.daemon = True
+    # message_thread.start()
     
     # 启动Flask服务
     app.run(host='0.0.0.0', port=80)

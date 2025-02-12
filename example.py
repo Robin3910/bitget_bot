@@ -1,5 +1,6 @@
 import bitget.v1.mix.order_api as maxOrderApi
 import bitget.bitget_api as baseApi
+import bitget.consts as bg_constants
 
 from bitget.exceptions import BitgetAPIException
 
@@ -25,21 +26,34 @@ if __name__ == '__main__':
     # except BitgetAPIException as e:
     #     print("error:" + e.message)
 
+    # try:
+    #     params = {}
+    #     params["symbol"] = "SBTCSUSDT"
+    #     params["marginCoin"] = "SUSDT"
+    #     params["marginMode"] = "crossed"
+    #     params["productType"] = "susdt-futures"
+
+    #     response = baseApi.post("/api/v2/mix/account/set-margin-mode", params)
+    #     print(response)
+    # except BitgetAPIException as e:
+    #     print("error:" + e.message)
+
+
     # Demo 2:place order by post directly
-    try:
-        params = {}
-        params["symbol"] = "BTCUSDT"
-        params["marginCoin"] = "USDT"
-        params["productType"] = "SUSDT-FUTURES"
-        params["side"] = "open_long"
-        params["orderType"] = "limit"
-        params["price"] = "96700"
-        params["size"] = "0.01"
-        params["timInForceValue"] = "normal"
-        response = baseApi.post("/api/mix/v1/order/placeOrder", params)
-        print(response)
-    except BitgetAPIException as e:
-        print("error:" + e.message)
+    # try:
+    #     params = {}
+    #     params["symbol"] = "BTCUSDT"
+    #     params["marginCoin"] = "USDT"
+    #     params["marginMode"] = "crossed"
+    #     params["productType"] = bg_constants.PRODUCT_TYPE
+    #     params["side"] = "buy"
+    #     params["orderType"] = "limit"
+    #     params["price"] = "96700"
+    #     params["size"] = "0.01"
+    #     response = baseApi.post("/api/v2/mix/order/place-order", params)
+    #     print(response)
+    # except BitgetAPIException as e:
+    #     print("error:" + e.message)
 
     # Demo 3:send get request
     # try:
@@ -66,3 +80,14 @@ if __name__ == '__main__':
     #     print(response)
     # except BitgetAPIException as e:
     #     print("error:" + e.message)
+
+
+    # Demo 获取品种精度
+    try:
+        params = {}
+        params["symbol"] = "BTCUSDT"
+        params["productType"] = "USDT-FUTURES"
+        response = baseApi.get("/api/v2/mix/market/contracts", params)
+        print(response)
+    except BitgetAPIException as e:
+        print("error:" + e.message)

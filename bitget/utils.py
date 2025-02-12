@@ -34,6 +34,8 @@ def get_header(api_key, sign, timestamp, passphrase):
     header[c.OK_ACCESS_TIMESTAMP] = str(timestamp)
     header[c.OK_ACCESS_PASSPHRASE] = passphrase
     header[c.LOCALE] = 'zh-CN'
+    if c.ENV != 'prd':
+        header["paptrading"] = "1"
 
     return header
 
