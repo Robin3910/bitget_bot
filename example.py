@@ -10,22 +10,7 @@ if __name__ == '__main__':
     passphrase = "robin3910"
     baseApi = baseApi.BitgetApi(apiKey, secretKey, passphrase)
 
-    # # Demo 1:place order
-    # maxOrderApi = maxOrderApi.OrderApi(apiKey, secretKey, passphrase)
-    # try:
-    #     params = {}
-    #     params["symbol"] = "BTCUSDT_UMCBL"
-    #     params["marginCoin"] = "USDT"
-    #     params["side"] = "open_long"
-    #     params["orderType"] = "limit"
-    #     params["price"] = "27012"
-    #     params["size"] = "0.01"
-    #     params["timInForceValue"] = "normal"
-    #     response = maxOrderApi.placeOrder(params)
-    #     print(response)
-    # except BitgetAPIException as e:
-    #     print("error:" + e.message)
-
+    # Demo 设置保证金
     # try:
     #     params = {}
     #     params["symbol"] = "SBTCSUSDT"
@@ -39,55 +24,53 @@ if __name__ == '__main__':
     #     print("error:" + e.message)
 
 
-    # Demo 2:place order by post directly
+    # Demo 下单
     # try:
     #     params = {}
     #     params["symbol"] = "BTCUSDT"
     #     params["marginCoin"] = "USDT"
     #     params["marginMode"] = "crossed"
-    #     params["productType"] = bg_constants.PRODUCT_TYPE
+    #     params["productType"] = "susdt-futures"
     #     params["side"] = "buy"
     #     params["orderType"] = "limit"
-    #     params["price"] = "96700"
+    #     params["price"] = "92300"
     #     params["size"] = "0.01"
     #     response = baseApi.post("/api/v2/mix/order/place-order", params)
     #     print(response)
     # except BitgetAPIException as e:
     #     print("error:" + e.message)
 
-    # Demo 3:send get request
-    # try:
-    #     params = {}
-    #     params["productType"] = "umcbl"
-    #     response = baseApi.get("/api/mix/v1/market/contracts", params)
-    #     print(response)
-    # except BitgetAPIException as e:
-    #     print("error:" + e.message)
-
-    # Demo 4:send get request with no params
-    # try:
-    #     response = baseApi.get("/api/spot/v1/account/getInfo", {})
-    #     print(response)
-    # except BitgetAPIException as e:
-    #     print("error:" + e.message)
-
-    # # Demo 5:send get request
-    # try:
-    #     params = {}
-    #     params["symbol"] = "AIUSDT"
-    #     params["businessType"] = "spot"
-    #     response = baseApi.get("/api/v2/common/trade-rate", params)
-    #     print(response)
-    # except BitgetAPIException as e:
-    #     print("error:" + e.message)
-
 
     # Demo 获取品种精度
+    # try:
+    #     params = {}
+    #     params["symbol"] = "BTCUSDT"
+    #     params["productType"] = "USDT-FUTURES"
+    #     response = baseApi.get("/api/v2/mix/market/contracts", params)
+    #     print(response)
+    # except BitgetAPIException as e:
+    #     print("error:" + e.message)
+
+
+    # Demo 平仓
     try:
         params = {}
         params["symbol"] = "BTCUSDT"
-        params["productType"] = "USDT-FUTURES"
-        response = baseApi.get("/api/v2/mix/market/contracts", params)
+        params["productType"] = "susdt-futures"
+        # params["holdSide"] = "long"
+        response = baseApi.post("/api/v2/mix/order/close-positions", params)
         print(response)
     except BitgetAPIException as e:
         print("error:" + e.message)
+
+
+    # Demo 获取仓位信息
+    # try:
+    #     params = {}
+    #     params["symbol"] = "BTCUSDT"
+    #     params["productType"] = "SUSDT-FUTURES"
+    #     params["marginCoin"] = "USDT"
+    #     response = baseApi.get("/api/v2/mix/position/single-position", params)
+    #     print(response)
+    # except BitgetAPIException as e:
+    #     print("error:" + e.message)

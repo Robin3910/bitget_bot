@@ -17,6 +17,7 @@ from watchdog.events import FileSystemEventHandler
 import os
 import bitget.bitget_api as baseApi
 import bitget.consts as bg_constants
+from bitget.exceptions import BitgetAPIException
 
 app = Flask(__name__)
 
@@ -31,7 +32,7 @@ client = Client(
     bg_constants.API_SECRET, 
 )
 
-
+# 对币种信息预处理
 def prefix_symbol(s: str) -> str:
     # BINANCE:BTCUSDT.P -> BTC-USDT-SWAP
     # 首先处理冒号，如果存在则取后面的部分
@@ -86,7 +87,7 @@ logger = setup_logger()
 # 获取币种的精度
 try:
     params = {}
-    params["symbol"] = "BTCUSDT"
+    # params["symbol"] = "BTCUSDT"
     params["productType"] = "USDT-FUTURES"
     exchange_info = baseApi.get("/api/v2/mix/market/contracts", params)
     symbol_tick_size = {}
@@ -103,24 +104,127 @@ except ClientError as error:
         )
     )
 
+def place_order(symbol, side, qty, price, order_type="limit"):
+    """下单"""
+    try:
+        params = {}
+        params["symbol"] = symbol
+        params["marginCoin"] = "USDT"
+        params["marginMode"] = "crossed"
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        params["side"] = side
+        params["orderType"] = order_type
+        params["price"] = price
+        params["size"] = qty
+        response = baseApi.post("/api/v2/mix/order/place-order", params)
+        return response
+    except BitgetAPIException as e:
+        logger.error(f'{symbol}|下单失败，错误: {e}')
+        return None
+
+def close_position(symbol):
+    """平仓"""
+    try:
+        params = {}
+        params["symbol"] = symbol
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        response = baseApi.post("/api/v2/mix/order/close-positions", params)
+        return response
+    except BitgetAPIException as e:
+        logger.error(f'{symbol}|平仓失败，错误: {e}')
+        return None
+
+
 # 创建全局字典来存储不同币种的交易信息
 trading_pairs = {}
 
 class GridTrader:
     def __init__(self, symbol):
         self.symbol = prefix_symbol(symbol)
+        self.total_usdt = 0
+        self.every_zone_usdt = 0
+        self.loss_decrease = 0
+        self.direction = ""
+        self.entry_config = ""
+        self.exit_config = ""
+        self.pos_for_trail = 0
+        self.trail_active_price = 0
+        self.trail_callback = 0
+        self.entry_list = []
+        self.exit_list = []
+        self.paused = False # 是否暂停
+        self.running = False # 是否运行
         self.current_grid = 0
         self.grids = []
         self.stop_loss_price = 0
         self.position_qty = 0
         self.initial_price = 0
-        self.is_monitoring = False  # 添加监控状态标志
         self.monitor_thread = None  # 添加监控线程对象
         self.stop_loss_order_id = None  # 添加止损单ID
         self.side = ""
         
         logger.info(f'{symbol} GridTrader 初始化完成')
-        
+
+
+    def update_trading_params(self, data):
+        if data['direction'] == self.direction:
+            logger.info(f'{self.symbol} 交易方向未发生变化，无需更新交易参数')
+            return
+        elif data['direction'] == "wait":
+            logger.info(f'{self.symbol} 交易方向为等待，无需更新交易参数')
+            self.paused = True
+            return
+        elif data['direction'] != self.direction and self.direction != "wait":
+            # 平仓
+            close_position(self.symbol)
+
+            # 更新新的方向的参数
+            logger.info(f'更新交易参数: {json.dumps(data, ensure_ascii=False)}')
+            self.total_usdt = float(data['total_usdt'])
+            self.every_zone_usdt = float(data['every_zone_usdt'])
+            self.loss_decrease = float(data['loss_decrease'])
+            self.direction = data['direction']
+            self.entry_config = data['entry_config']
+            self.exit_config = data['exit_config']
+            self.pos_for_trail = float(data['pos_for_trail'])
+            self.trail_active_price = float(data['trail_active_price'])
+            self.trail_callback = float(data['trail_callback'])
+            # 解析入场配置
+            self.entry_list = []
+            if self.entry_config:
+                entry_configs = self.entry_config.split('|')
+                for config in entry_configs:
+                    price_ratio, percent = config.split('_')
+                    self.entry_list.append({
+                        'price_ratio': float(price_ratio), # 价格处于区间的百分比
+                        'percent': float(percent)  # 投入资金百分比
+                    })
+                logger.info(f'入场配置解析结果: {json.dumps(self.entry_list, ensure_ascii=False)}')
+            
+            # 解析出场配置
+            self.exit_list = []
+            if self.exit_config:
+                exit_configs = self.exit_config.split('|')
+                for config in exit_configs:
+                    price_ratio, percent = config.split('_')
+                    self.exit_list.append({
+                        'price_ratio': float(price_ratio), # 价格处于区间的百分比
+                        'percent': float(percent)  # 投入资金百分比
+                    })
+                logger.info(f'出场配置解析结果: {json.dumps(self.exit_list, ensure_ascii=False)}')
+
+            # 挂上限价单
+
+            # 还需要不断监控当前的成交情况，用一个map来记录一下
+            # 如果成交了，更新map的信息
+            # 如果有仓位离场了，则价格再次下跌的时候要补齐仓位
+            # 每次成交了一个仓位，就需要更新一下未来的离场限价单，因为持仓更新，未来需要离场的仓位变大了
+
+
+            # 存在一个问题：离场了一部分仓位，价格下跌后要补仓多少呢
+            # 肯定是先补齐当前价格的仓位，如果当前价格的仓位已经满足了，那就无需再补了
+
+            
     def set_trading_params(self, data):
         logger.info(f'设置交易参数: {json.dumps(data, ensure_ascii=False)}')
         self.initial_price = float(data['price'])  # 当前价格
@@ -368,11 +472,12 @@ class GridTrader:
 
 # {
 #   "symbol": "BTCUSDT", // 币种
+#   "total_usdt": 10000, // 总保证金
 # 	"every_zone_usdt": 0.02, // 每次区间投入的金额
 #   "loss_decrease": 0.25, // 每次区间亏损后，下一次需要降低多少比例的区间投入额
 # 	"direction": "buy/sell", // 交易方向
-#   "entry_config": "",
-#   "exit_config": "",
+#   "entry_config": "", // 入场配置
+#   "exit_config": "", // 出场配置
 #   "pos_for_trail": "", // 预留多少x%的仓位用于动态止盈
 #   "trail_active_price": 0.6, // 当价格触达区间x%时，开始动态止盈
 #   "trail_callback": 0.1, // 当价格从高点回落10%的时候，止盈出场
