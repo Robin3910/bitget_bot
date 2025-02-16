@@ -1,4 +1,3 @@
-import bitget.v1.mix.order_api as maxOrderApi
 import bitget.bitget_api as baseApi
 import bitget.consts as bg_constants
 
@@ -10,18 +9,18 @@ if __name__ == '__main__':
     passphrase = "robin3910"
     baseApi = baseApi.BitgetApi(apiKey, secretKey, passphrase)
 
-    # Demo 设置保证金
-    # try:
-    #     params = {}
-    #     params["symbol"] = "SBTCSUSDT"
-    #     params["marginCoin"] = "SUSDT"
-    #     params["marginMode"] = "crossed"
-    #     params["productType"] = "susdt-futures"
+    # Demo 设置保证金模式
+    try:
+        params = {}
+        params["symbol"] = "SBTCSUSDT"
+        params["marginCoin"] = "SUSDT"
+        params["marginMode"] = "crossed"
+        params["productType"] = "susdt-futures"
 
-    #     response = baseApi.post("/api/v2/mix/account/set-margin-mode", params)
-    #     print(response)
-    # except BitgetAPIException as e:
-    #     print("error:" + e.message)
+        response = baseApi.post("/api/v2/mix/account/set-margin-mode", params)
+        print(response)
+    except BitgetAPIException as e:
+        print("error:" + e.message)
 
 
     # Demo 下单
@@ -100,11 +99,11 @@ if __name__ == '__main__':
     #     print("error:" + e.message)
 
     # 撤销所有挂单
-    try:
-        params = {}
-        params["symbol"] = "SBTCSUSDT"
-        params["productType"] = "SUSDT-FUTURES"
-        response = baseApi.post("/api/v2/mix/order/cancel-all-orders", params)
-        print(response)
-    except BitgetAPIException as e:
-        print("error:" + e.message)
+    # try:
+    #     params = {}
+    #     params["symbol"] = "SBTCSUSDT"
+    #     params["productType"] = "SUSDT-FUTURES"
+    #     response = baseApi.post("/api/v2/mix/order/cancel-all-orders", params)
+    #     print(response)
+    # except BitgetAPIException as e:
+    #     print("error:" + e.message)

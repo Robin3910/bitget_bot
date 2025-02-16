@@ -404,21 +404,44 @@ class GridTrader:
                 # 先获取一下仓位
                 position, hold_side = get_position(self.symbol)
                 if position > 0 and hold_side == "long":
-                    logger.info(f'{self.symbol} 当前仓位: {position}')
-                    order_list = []
-                    for entry in self.entry_list:
-                        if entry['order_id'] is not None:
-                            order_list.append(entry['order_id'])
-
-                    # 检查挂的入场单成交了多少
+                    # 获取当前所有挂单
                     pending_orders = get_pending_orders(self.symbol)
+                    total_exit_qty = 0
+                    existing_exit_orders = {}
+                    
+                    # 统计现有的出场挂单数量
                     if pending_orders:
                         for order in pending_orders:
-                            if order['side'] == "buy":
-                                if order['status'] == "filled":
-                                    logger.info(f'{self.symbol} 入场单成交: {order}')
-
-                    # 根据入场情况设置出场订单
+                            if order['side'] == "sell":  # 多仓的出场单是sell
+                                total_exit_qty += float(order['size'])
+                                existing_exit_orders[float(order['price'])] = order['orderId']
+                    
+                    # 如果出场挂单总量与当前持仓量不一致，需要更新出场订单
+                    if abs(total_exit_qty - position) > 0.000001:  # 考虑浮点数精度问题
+                        logger.info(f'{self.symbol} 出场挂单总量({total_exit_qty})与当前持仓量({position})不一致，更新出场订单')
+                        
+                        # 取消所有现有的出场挂单
+                        for order_id in existing_exit_orders.values():
+                            cancel_order(self.symbol, order_id)
+                        
+                        # 创建新的出场订单列表
+                        new_exit_orders = []
+                        for exit_conf in self.exit_list:
+                            exit_qty = round(position * exit_conf['percent'], symbol_tick_size[self.symbol]['min_qty'])
+                            if exit_qty > 0:  # 只有数量大于0才创建订单
+                                new_exit_orders.append({
+                                    "side": "SELL",
+                                    "price": exit_conf['exit_price'],
+                                    "size": exit_qty,
+                                    "orderType": "limit"
+                                })
+                        
+                        # 批量下新的出场订单
+                        if new_exit_orders:
+                            logger.info(f'{self.symbol} 创建新的出场订单: {json.dumps(new_exit_orders, ensure_ascii=False)}')
+                            batch_place_order(self.symbol, new_exit_orders)
+                    else:
+                        logger.info(f'{self.symbol} 出场挂单总量与当前持仓量一致，无需更新')
                 elif position > 0 and hold_side == "short":
                     pass
 
