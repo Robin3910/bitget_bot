@@ -250,9 +250,10 @@ try:
     symbol_tick_size = {}
     for item in exchange_info['data']:
         symbol_tick_size[item['symbol']] = {
-            'tick_size': item["pricePlace"],
-            'min_qty': item["volumePlace"],
+            'tick_size': int(item["pricePlace"]),
+            'min_qty': int(item["volumePlace"]),
         }
+    logger.info(f'获取币种精度成功')
 except BitgetAPIException as error:
     send_wx_notification(f'获取币种精度失败', f'获取币种精度失败，错误: {error}')
     logger.error(
@@ -288,148 +289,150 @@ class GridTrader:
 
 
     def update_trading_params(self, data):
-        if data['direction'] == self.direction:
+        # 当前如果处于运行状态，则无需更改交易参数
+        if data['direction'] == self.direction and self.running:
             logger.info(f'{self.symbol} 交易方向未发生变化，无需更新交易参数')
             return
-        elif data['direction'] == "wait":
-            logger.info(f'{self.symbol} 交易方向为等待，无需更新交易参数')
-            self.paused = True
-            return
-        elif data['direction'] != self.direction and self.direction != "wait":
-            # 平仓
-            close_position(self.symbol)
-            # 取消所有挂单
-            cancel_all_orders(self.symbol)
 
-            # 更新新的方向的参数
-            logger.info(f'更新交易参数: {json.dumps(data, ensure_ascii=False)}')
-            self.total_usdt = float(data['total_usdt'])
-            self.every_zone_usdt = float(data['every_zone_usdt'])
-            self.zone_usdt = self.total_usdt * self.every_zone_usdt # 预期一个区间要投入的金额
-            self.loss_decrease = float(data['loss_decrease'])
-            self.direction = data['direction']
-            self.entry_config = data['entry_config']
-            self.exit_config = data['exit_config']
-            self.pos_for_trail = float(data['pos_for_trail'])
-            self.trail_active_price = float(data['trail_active_price'])
-            self.trail_callback = float(data['trail_callback'])
-            self.up_line = float(data['up_line'])
-            self.down_line = float(data['down_line'])
+        elif data['direction'] != self.direction:
+            self.running = True
+            try:
+                # 平仓
+                close_position(self.symbol)
+                # 取消所有挂单
+                cancel_all_orders(self.symbol)
 
-            if self.direction == "buy":
-                self.interval = self.up_line - self.down_line
-                # 解析入场配置
-                self.entry_list = []
-                if self.entry_config:
-                    entry_configs = self.entry_config.split('|')
-                    for config in entry_configs:
-                        price_ratio, percent = config.split('_')
-                        # 入场价格 = 下轨 + 价格处于区间的百分比 * 区间宽度
-                        entry_price = round(self.down_line + float(price_ratio) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
-                        entry_percent = float(percent)
-                        entry_zone_usdt = self.zone_usdt * entry_percent
-                        entry_qty = round(entry_zone_usdt / entry_price, symbol_tick_size[self.symbol]['min_qty'])
-                        self.entry_list.append({
-                            'entry_price': entry_price, # 入场价格
-                            'percent': entry_percent,  # 投入资金百分比
-                            'zone_usdt': entry_zone_usdt, # 投入资金
-                            "qty": entry_qty, # 投入数量
-                            "order_id": None # 订单ID
+                # 更新新的方向的参数
+                logger.info(f'更新交易参数: {json.dumps(data, ensure_ascii=False)}')
+                self.total_usdt = float(data['total_usdt'])
+                self.every_zone_usdt = float(data['every_zone_usdt'])
+                self.zone_usdt = self.total_usdt * self.every_zone_usdt # 预期一个区间要投入的金额
+                self.loss_decrease = float(data['loss_decrease'])
+                self.direction = data['direction']
+                self.entry_config = data['entry_config']
+                self.exit_config = data['exit_config']
+                self.pos_for_trail = float(data['pos_for_trail'])
+                self.trail_active_price = float(data['trail_active_price'])
+                self.trail_callback = float(data['trail_callback'])
+                self.up_line = float(data['up_line'])
+                self.down_line = float(data['down_line'])
+
+                if self.direction == "buy":
+                    self.interval = self.up_line - self.down_line
+                    # 解析入场配置
+                    self.entry_list = []
+                    if self.entry_config:
+                        entry_configs = self.entry_config.split('|')
+                        for config in entry_configs:
+                            price_ratio, percent = config.split('_')
+                            # 入场价格 = 下轨 + 价格处于区间的百分比 * 区间宽度
+                            entry_price = round(self.down_line + float(price_ratio) * 0.01 * self.interval, symbol_tick_size[self.symbol]['tick_size'])
+                            entry_percent = float(percent) * 0.01
+                            entry_zone_usdt = self.zone_usdt * entry_percent
+                            entry_qty = round(entry_zone_usdt / entry_price, symbol_tick_size[self.symbol]['min_qty'])
+                            self.entry_list.append({
+                                'entry_price': entry_price, # 入场价格
+                                'percent': entry_percent,  # 投入资金百分比
+                                'zone_usdt': entry_zone_usdt, # 投入资金
+                                "qty": entry_qty, # 投入数量
+                                "order_id": None # 订单ID
+                            })
+                        logger.info(f'入场配置解析结果: {json.dumps(self.entry_list, ensure_ascii=False)}')
+                    
+                    # 解析出场配置
+                    self.exit_list = []
+                    if self.exit_config:
+                        exit_configs = self.exit_config.split('|')
+                        for config in exit_configs:
+                            price_ratio, percent = config.split('_')
+                            exit_price = round(self.down_line + float(price_ratio)*0.01 * self.interval, symbol_tick_size[self.symbol]['tick_size'])
+                            exit_percent = float(percent) * 0.01
+                            self.exit_list.append({
+                                'exit_price': exit_price, # 退出价格
+                                'percent': exit_percent,  # 离场资金百分比
+                            })
+                        logger.info(f'出场配置解析结果: {json.dumps(self.exit_list, ensure_ascii=False)}')
+
+                    # 挂上限价单
+                    order_list = []
+                    for entry in self.entry_list:
+                        order_list.append({
+                            "side": "buy",
+                            "price": entry['entry_price'],
+                            "size": entry['qty'],
+                            "orderType": "limit"
                         })
-                    logger.info(f'入场配置解析结果: {json.dumps(self.entry_list, ensure_ascii=False)}')
-                
-                # 解析出场配置
-                self.exit_list = []
-                if self.exit_config:
-                    exit_configs = self.exit_config.split('|')
-                    for config in exit_configs:
-                        price_ratio, percent = config.split('_')
-                        exit_price = round(self.down_line + float(price_ratio) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
-                        exit_percent = float(percent)
-                        self.exit_list.append({
-                            'exit_price': exit_price, # 退出价格
-                            'percent': exit_percent,  # 离场资金百分比
+                    ret_list = batch_place_order(self.symbol, order_list)
+                    for i in range(len(ret_list)):
+                        self.entry_list[i]['order_id'] = ret_list[i]['orderId']
+
+                    # 还需要不断监控当前的成交情况，用一个map来记录一下
+                    # 如果成交了，更新map的信息
+                    # 如果有仓位离场了，则价格再次下跌的时候要补齐仓位
+                    # 每次成交了一个仓位，就需要更新一下未来的离场限价单，因为持仓更新，未来需要离场的仓位变大了
+
+
+                    # 存在一个问题：离场了一部分仓位，价格下跌后要补仓多少呢
+                    # 肯定是先补齐当前价格的仓位，如果当前价格的仓位已经满足了，那就无需再补了
+
+                elif self.direction == "sell":
+                    self.interval = self.down_line - self.up_line
+                    # 解析入场配置
+                    self.entry_list = []
+                    if self.entry_config:
+                        entry_configs = self.entry_config.split('|')
+                        for config in entry_configs:
+                            price_ratio, percent = config.split('_')
+                            # 入场价格 = 下轨 - 价格处于区间的百分比 * 区间宽度
+                            # 做空时下轨是区间上沿的价格
+                            entry_price = round(self.down_line - (1 - float(price_ratio) * 0.01) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
+                            entry_percent = float(percent) * 0.01
+                            entry_zone_usdt = self.zone_usdt * entry_percent
+                            entry_qty = round(entry_zone_usdt / entry_price, symbol_tick_size[self.symbol]['min_qty'])
+                            self.entry_list.append({
+                                'entry_price': entry_price, # 入场价格
+                                'percent': entry_percent,  # 投入资金百分比
+                                'zone_usdt': entry_zone_usdt, # 投入资金
+                                "qty": entry_qty, # 投入数量
+                                "order_id": None # 订单ID
+                            })
+                        logger.info(f'入场配置解析结果: {json.dumps(self.entry_list, ensure_ascii=False)}')
+                    
+                    # 解析出场配置
+                    self.exit_list = []
+                    if self.exit_config:
+                        exit_configs = self.exit_config.split('|')
+                        for config in exit_configs:
+                            price_ratio, percent = config.split('_')
+                            exit_price = round(self.down_line - (1 - float(price_ratio) * 0.01) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
+                            exit_percent = float(percent) * 0.01
+                            self.exit_list.append({
+                                'exit_price': exit_price, # 退出价格
+                                'percent': exit_percent,  # 离场资金百分比
+                                'order_id': None # 订单ID
+                            })
+                        logger.info(f'出场配置解析结果: {json.dumps(self.exit_list, ensure_ascii=False)}')
+
+                    # 挂限价单
+                    order_list = []
+                    for entry in self.entry_list:
+                        order_list.append({
+                            "side": "sell",
+                            "price": entry['entry_price'],
+                            "size": entry['qty'],
+                            "orderType": "limit"
                         })
-                    logger.info(f'出场配置解析结果: {json.dumps(self.exit_list, ensure_ascii=False)}')
+                    ret_list = batch_place_order(self.symbol, order_list)
+                    for i in range(len(ret_list)):
+                        self.entry_list[i]['order_id'] = ret_list[i]['orderId']
 
-                # 挂上限价单
-                order_list = []
-                for entry in self.entry_list:
-                    order_list.append({
-                        "side": "buy",
-                        "price": entry['entry_price'],
-                        "size": entry['qty'],
-                        "orderType": "limit"
-                    })
-                ret_list = batch_place_order(self.symbol, order_list)
-                for i in range(len(ret_list)):
-                    self.entry_list[i]['order_id'] = ret_list[i]['orderId']
-
-                # 还需要不断监控当前的成交情况，用一个map来记录一下
-                # 如果成交了，更新map的信息
-                # 如果有仓位离场了，则价格再次下跌的时候要补齐仓位
-                # 每次成交了一个仓位，就需要更新一下未来的离场限价单，因为持仓更新，未来需要离场的仓位变大了
-
-
-                # 存在一个问题：离场了一部分仓位，价格下跌后要补仓多少呢
-                # 肯定是先补齐当前价格的仓位，如果当前价格的仓位已经满足了，那就无需再补了
-
-            elif self.direction == "sell":
-                # TODO 卖出方向的逻辑
-                self.interval = self.down_line - self.up_line
-                # 解析入场配置
-                self.entry_list = []
-                if self.entry_config:
-                    entry_configs = self.entry_config.split('|')
-                    for config in entry_configs:
-                        price_ratio, percent = config.split('_')
-                        # 入场价格 = 下轨 - 价格处于区间的百分比 * 区间宽度
-                        # 做空时下轨是区间上沿的价格
-                        entry_price = round(self.down_line - float(price_ratio) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
-                        entry_percent = float(percent)
-                        entry_zone_usdt = self.zone_usdt * entry_percent
-                        entry_qty = round(entry_zone_usdt / entry_price, symbol_tick_size[self.symbol]['min_qty'])
-                        self.entry_list.append({
-                            'entry_price': entry_price, # 入场价格
-                            'percent': entry_percent,  # 投入资金百分比
-                            'zone_usdt': entry_zone_usdt, # 投入资金
-                            "qty": entry_qty, # 投入数量
-                            "order_id": None # 订单ID
-                        })
-                    logger.info(f'入场配置解析结果: {json.dumps(self.entry_list, ensure_ascii=False)}')
-                
-                # 解析出场配置
-                self.exit_list = []
-                if self.exit_config:
-                    exit_configs = self.exit_config.split('|')
-                    for config in exit_configs:
-                        price_ratio, percent = config.split('_')
-                        exit_price = round(self.down_line - float(price_ratio) * self.interval, symbol_tick_size[self.symbol]['tick_size'])
-                        exit_percent = float(percent)
-                        self.exit_list.append({
-                            'exit_price': exit_price, # 退出价格
-                            'percent': exit_percent,  # 离场资金百分比
-                        })
-                    logger.info(f'出场配置解析结果: {json.dumps(self.exit_list, ensure_ascii=False)}')
-
-                # 挂限价单
-                order_list = []
-                for entry in self.entry_list:
-                    order_list.append({
-                        "side": "sell",
-                        "price": entry['entry_price'],
-                        "size": entry['qty'],
-                        "orderType": "limit"
-                    })
-                ret_list = batch_place_order(self.symbol, order_list)
-                for i in range(len(ret_list)):
-                    self.entry_list[i]['order_id'] = ret_list[i]['orderId']
-
-            # 开启一个新的线程来监控成交情况
-            if self.monitor_thread is None:
-                self.monitor_thread = threading.Thread(target=self.monitor_price)
-                self.monitor_thread.start()
-
+                # 开启一个新的线程来监控成交情况
+                if self.monitor_thread is None:
+                    self.monitor_thread = threading.Thread(target=self.monitor_price)
+                    self.monitor_thread.start()
+            except Exception as e:
+                logger.error(f'{self.symbol} 更新交易参数时发生错误: {str(e)}')
+                return None
 
     def monitor_price(self):
         """监控价格并更新止损"""
@@ -438,10 +441,6 @@ class GridTrader:
         
         while True:
             try:
-                if self.paused:
-                    time.sleep(20)
-                    continue
-
                 # 获取当前仓位和持仓方向
                 position, hold_side = get_position(self.symbol)
                 # 获取当前所有挂单
@@ -459,7 +458,7 @@ class GridTrader:
                     if entry['order_id'] and entry['order_id'] not in pending_order_map:
                         logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交')
                         order_detail = query_order(self.symbol, entry['order_id'])
-                        if order_detail and order_detail['state'] == 'filled':
+                        if order_detail and order_detail['status'] == 'filled':
                             # 清除掉之后，下一次进来如果发现当前的入场单都是live状态，那不需要再去更新出场单
                             self.entry_list.remove(entry)
                             logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交，移除入场单')
@@ -496,7 +495,7 @@ class GridTrader:
                     if exit_conf['order_id'] and exit_conf['order_id'] not in pending_order_map:
                         logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交')
                         order_detail = query_order(self.symbol, exit_conf['order_id'])
-                        if order_detail and order_detail['state'] == 'filled':
+                        if order_detail and order_detail['status'] == 'filled':
                             # 成交的单子就会被移除掉
                             self.exit_list.remove(exit_conf)
                             logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交，移除出场单')
@@ -571,33 +570,15 @@ def handle_message():
         symbol = data['symbol']
         logger.info(f'收到 {symbol} 的新交易参数请求: {json.dumps(data, ensure_ascii=False)}')
         
-        # 检查该币种是否已在监控中
-        if symbol in trading_pairs and trading_pairs[symbol].is_monitoring:
-            logger.warning(f'{symbol} 已经处于监控状态')
-            return jsonify({
-                "status": "error", 
-                "message": f"{symbol} 已经处于监控状态，请先停止现有监控后再重新设置"
-            })
-        
-        # 创建或更新 GridTrader 实例
-        trading_pairs[symbol] = GridTrader(symbol)
+        if symbol not in trading_pairs:
+            # 创建或更新 GridTrader 实例
+            trading_pairs[symbol] = GridTrader(symbol)
         
         # 设置交易参数
-        trading_pairs[symbol].set_trading_params(data)
+        trading_pairs[symbol].update_trading_params(data)
         
-        # 立即设置初始止损单
-        # 将挂止损单的操作上移到set_trading_params中
-        # trading_pairs[symbol].place_stop_loss_order(trading_pairs[symbol].stop_loss_price)
-        
-        # 启动价格监控线程
-        trading_pairs[symbol].monitor_thread = threading.Thread(
-            target=trading_pairs[symbol].monitor_price
-        )
-        trading_pairs[symbol].monitor_thread.daemon = True
-        trading_pairs[symbol].monitor_thread.start()
-        
-        logger.info(f'{symbol} 交易参数设置成功')
-        return jsonify({"status": "success", "message": f"{symbol} 交易参数设置成功"})
+        # logger.info(f'{symbol} 交易参数设置成功')
+        return jsonify({"status": "success", "message": f"{symbol} 接收消息成功"})
     except Exception as e:
         logger.error(f'设置交易参数失败: {str(e)}')
         return jsonify({"status": "error", "message": str(e)})

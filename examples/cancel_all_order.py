@@ -13,8 +13,8 @@ if __name__ == '__main__':
     # 撤销所有挂单
     try:
         params = {}
-        params["symbol"] = "SBTCSUSDT"
-        params["productType"] = "SUSDT-FUTURES"
+        params["symbol"] = "BTCUSDT"
+        params["productType"] = "USDT-FUTURES"
         response = baseApi.post("/api/v2/mix/order/cancel-all-orders", params)
         print(response)
     except BitgetAPIException as e:
