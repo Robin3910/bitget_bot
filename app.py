@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 from flask import Flask, request, jsonify
-from binance.um_futures import UMFutures as Client
 import threading
 import time
 import requests
@@ -9,12 +8,6 @@ from datetime import datetime, timedelta
 import json
 import logging
 from logging.handlers import RotatingFileHandler
-from binance.um_futures import UMFutures as Client
-from binance.error import ClientError
-from config import EXCHANGE_CONFIG, WX_CONFIG
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import os
 import bitget.bitget_api as baseApi
 import bitget.consts as bg_constants
 from bitget.exceptions import BitgetAPIException
@@ -27,10 +20,6 @@ PRODUCT_TYPE = bg_constants.PRODUCT_TYPE
 
 ip_white_list = bg_constants.IP_WHITE_LIST
 baseApi = baseApi.BitgetApi(bg_constants.API_KEY, bg_constants.API_SECRET, bg_constants.API_PASSPHRASE)
-client = Client(
-    bg_constants.API_KEY, 
-    bg_constants.API_SECRET, 
-)
 
 # 对币种信息预处理
 def prefix_symbol(s: str) -> str:
@@ -84,26 +73,6 @@ def setup_logger():
 
 logger = setup_logger()
 
-# 获取币种的精度
-try:
-    params = {}
-    # params["symbol"] = "BTCUSDT"
-    params["productType"] = "USDT-FUTURES"
-    exchange_info = baseApi.get("/api/v2/mix/market/contracts", params)
-    symbol_tick_size = {}
-    for item in exchange_info['data']:
-        symbol_tick_size[item['symbol']] = {
-            'tick_size': item["pricePlace"],
-            'min_qty': item["volumePlace"],
-        }
-except ClientError as error:
-    send_wx_notification(f'获取币种精度失败', f'获取币种精度失败，错误: {error}')
-    logger.error(
-        "Found error. status: {}, error code: {}, error message: {}".format(
-            error.status_code, error.error_code, error.error_message
-        )
-    )
-
 def place_order(symbol, side, qty, price, order_type="limit"):
     """下单"""
     try:
@@ -124,6 +93,23 @@ def place_order(symbol, side, qty, price, order_type="limit"):
             return None
     except BitgetAPIException as e:
         logger.error(f'{symbol}|下单失败，错误: {e}')
+        return None
+
+def query_order(symbol, order_id):
+    """查询订单"""
+    try:
+        params = {}
+        params["symbol"] = symbol
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        params["orderId"] = order_id
+        response = baseApi.get("/api/v2/mix/order/detail", params)
+        if response['code'] == bg_constants.SUCCESS:
+            return response['data']
+        else:
+            logger.error(f'{symbol}|查询订单失败，错误: {response}')
+            return None
+    except BitgetAPIException as e:
+        logger.error(f'{symbol}|查询订单失败，错误: {e}')
         return None
 
 def close_position(symbol):
@@ -218,6 +204,63 @@ def cancel_all_orders(symbol):
         logger.error(f'{symbol}|撤销所有挂单失败，错误: {e}')
         return None
 
+def set_position_mode(pos_mode):
+    """设置持仓模式"""
+    try:
+        params = {}
+        params["posMode"] = pos_mode
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        response = baseApi.post("/api/v2/mix/account/set-position-mode", params)
+        if response['code'] == bg_constants.SUCCESS:
+            logger.info(f'设置持仓模式成功')
+            return None
+        else:
+            logger.error(f'设置持仓模式失败，错误: {response}')
+            return None
+    except BitgetAPIException as e:
+        logger.error(f'设置持仓模式失败，错误: {e}')
+        return None
+
+def batch_cancel_orders(symbol, order_id_list):
+    """批量撤销挂单"""
+    try:
+        params = {}
+        params["symbol"] = symbol
+        params["marginCoin"] = "USDT"
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        params["orderIdList"] = order_id_list
+        response = baseApi.post("/api/v2/mix/order/batch-cancel-order", params)
+        if response['code'] == bg_constants.SUCCESS:
+            return response['data']['successList']
+        else:
+            logger.error(f'{symbol}|批量撤销挂单失败，错误: {response}')
+            return None
+    except BitgetAPIException as e:
+        logger.error(f'{symbol}|批量撤销挂单失败，错误: {e}')
+        return None
+
+# 设置持仓模式
+set_position_mode("one_way_mode")
+
+# 获取币种的精度
+try:
+    params = {}
+    params["productType"] = "USDT-FUTURES"
+    exchange_info = baseApi.get("/api/v2/mix/market/contracts", params)
+    symbol_tick_size = {}
+    for item in exchange_info['data']:
+        symbol_tick_size[item['symbol']] = {
+            'tick_size': item["pricePlace"],
+            'min_qty': item["volumePlace"],
+        }
+except BitgetAPIException as error:
+    send_wx_notification(f'获取币种精度失败', f'获取币种精度失败，错误: {error}')
+    logger.error(
+        "Found error. status: {}, error code: {}, error message: {}".format(
+            error.status_code, error.error_code, error.error_message
+        )
+    )
+
 # 创建全局字典来存储不同币种的交易信息
 trading_pairs = {}
 
@@ -273,7 +316,7 @@ class GridTrader:
             self.up_line = float(data['up_line'])
             self.down_line = float(data['down_line'])
 
-            if self.direction == "BUY":
+            if self.direction == "buy":
                 self.interval = self.up_line - self.down_line
                 # 解析入场配置
                 self.entry_list = []
@@ -313,7 +356,7 @@ class GridTrader:
                 order_list = []
                 for entry in self.entry_list:
                     order_list.append({
-                        "side": "BUY",
+                        "side": "buy",
                         "price": entry['entry_price'],
                         "size": entry['qty'],
                         "orderType": "limit"
@@ -321,8 +364,6 @@ class GridTrader:
                 ret_list = batch_place_order(self.symbol, order_list)
                 for i in range(len(ret_list)):
                     self.entry_list[i]['order_id'] = ret_list[i]['orderId']
-
-
 
                 # 还需要不断监控当前的成交情况，用一个map来记录一下
                 # 如果成交了，更新map的信息
@@ -333,7 +374,7 @@ class GridTrader:
                 # 存在一个问题：离场了一部分仓位，价格下跌后要补仓多少呢
                 # 肯定是先补齐当前价格的仓位，如果当前价格的仓位已经满足了，那就无需再补了
 
-            elif self.direction == "SELL":
+            elif self.direction == "sell":
                 # TODO 卖出方向的逻辑
                 self.interval = self.down_line - self.up_line
                 # 解析入场配置
@@ -375,7 +416,7 @@ class GridTrader:
                 order_list = []
                 for entry in self.entry_list:
                     order_list.append({
-                        "side": "SELL",
+                        "side": "sell",
                         "price": entry['entry_price'],
                         "size": entry['qty'],
                         "orderType": "limit"
@@ -400,115 +441,106 @@ class GridTrader:
                 if self.paused:
                     time.sleep(20)
                     continue
-                # 检查当前仓位情况
-                # 先获取一下仓位
-                position, hold_side = get_position(self.symbol)
-                if position > 0 and hold_side == "long":
-                    # 获取当前所有挂单
-                    pending_orders = get_pending_orders(self.symbol)
-                    total_exit_qty = 0
-                    existing_exit_orders = {}
-                    
-                    # 统计现有的出场挂单数量
-                    if pending_orders:
-                        for order in pending_orders:
-                            if order['side'] == "sell":  # 多仓的出场单是sell
-                                total_exit_qty += float(order['size'])
-                                existing_exit_orders[float(order['price'])] = order['orderId']
-                    
-                    # 如果出场挂单总量与当前持仓量不一致，需要更新出场订单
-                    if abs(total_exit_qty - position) > 0.000001:  # 考虑浮点数精度问题
-                        logger.info(f'{self.symbol} 出场挂单总量({total_exit_qty})与当前持仓量({position})不一致，更新出场订单')
-                        
-                        # 取消所有现有的出场挂单
-                        for order_id in existing_exit_orders.values():
-                            cancel_order(self.symbol, order_id)
-                        
-                        # 创建新的出场订单列表
-                        new_exit_orders = []
-                        for exit_conf in self.exit_list:
-                            exit_qty = round(position * exit_conf['percent'], symbol_tick_size[self.symbol]['min_qty'])
-                            if exit_qty > 0:  # 只有数量大于0才创建订单
-                                new_exit_orders.append({
-                                    "side": "SELL",
-                                    "price": exit_conf['exit_price'],
-                                    "size": exit_qty,
-                                    "orderType": "limit"
-                                })
-                        
-                        # 批量下新的出场订单
-                        if new_exit_orders:
-                            logger.info(f'{self.symbol} 创建新的出场订单: {json.dumps(new_exit_orders, ensure_ascii=False)}')
-                            batch_place_order(self.symbol, new_exit_orders)
-                    else:
-                        logger.info(f'{self.symbol} 出场挂单总量与当前持仓量一致，无需更新')
-                elif position > 0 and hold_side == "short":
-                    pass
 
-                elif position == 0:
-                    # 无仓位的时候，需要检查一下入场单是否都挂好了
-                    pending_orders = get_pending_orders(self.symbol) # 获取该币种所有挂单
-                    if pending_orders:
-                        # 记录已匹配的订单和entry
-                        matched_orders = set()
-                        matched_entries = set()
-                        
-                        # 遍历所有挂单，检查是否与entry_list匹配
-                        for order in pending_orders:
-                            if order['side'] == "buy":
-                                order_price = float(order['price'])
-                                # 遍历entry_list寻找匹配项
-                                for entry in self.entry_list:
-                                    price_diff_ratio = abs(order_price - entry['entry_price']) / entry['entry_price']
-                                    if price_diff_ratio <= 0.005:  # 价格差在0.5%以内
-                                        matched_orders.add(order['orderId'])
-                                        matched_entries.add(entry['entry_price'])
-                                        entry['order_id'] = order['orderId']
-                                        break
-                        
-                        # 取消不在entry_list中的订单
-                        for order in pending_orders:
-                            if order['side'] == "buy" and order['orderId'] not in matched_orders:
-                                logger.info(f'{self.symbol} 取消不匹配的订单: {order["orderId"]}')
-                                cancel_order(self.symbol, order['orderId'])
-                        
-                        # 补充缺失的入场订单
-                        new_orders = []
-                        for entry in self.entry_list:
-                            if entry['entry_price'] not in matched_entries:
-                                new_orders.append({
-                                    "side": "BUY",
-                                    "price": entry['entry_price'],
-                                    "size": entry['qty'],
-                                    "orderType": "limit"
-                                })
-                        
-                        if new_orders:
-                            logger.info(f'{self.symbol} 补充缺失的入场订单: {json.dumps(new_orders, ensure_ascii=False)}')
-                            ret_list = batch_place_order(self.symbol, new_orders)
-                            if ret_list:
+                # 获取当前仓位和持仓方向
+                position, hold_side = get_position(self.symbol)
+                # 获取当前所有挂单
+                pending_orders = get_pending_orders(self.symbol)
+                
+                # 创建挂单映射，用于快速查找
+                pending_order_map = {}
+                if pending_orders:
+                    for order in pending_orders:
+                        pending_order_map[order['orderId']] = order
+
+                # 检查入场单状态
+                for entry in self.entry_list:
+                    # 如果入场单ID存在但在当前挂单中找不到，说明可能已成交
+                    if entry['order_id'] and entry['order_id'] not in pending_order_map:
+                        logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交')
+                        order_detail = query_order(self.symbol, entry['order_id'])
+                        if order_detail and order_detail['state'] == 'filled':
+                            # 清除掉之后，下一次进来如果发现当前的入场单都是live状态，那不需要再去更新出场单
+                            self.entry_list.remove(entry)
+                            logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交，移除入场单')
+                        # 检测到有入场单成交且已经有持仓，更新出场单
+                        if position > 0 and order_detail and order_detail['state'] == 'filled':
+                            # 取消所有现有的出场挂单
+                            exit_orders_to_cancel = [order['orderId'] for order in pending_orders if 
+                                                   (self.direction == "buy" and order['side'] == "sell") or
+                                                   (self.direction == "sell" and order['side'] == "buy")]
+                            if exit_orders_to_cancel:
+                                batch_cancel_orders(self.symbol, exit_orders_to_cancel)
+                            
+                            # 创建新的出场订单
+                            new_exit_orders = []
+                            for exit_conf in self.exit_list:
+                                exit_qty = round(position * exit_conf['percent'], symbol_tick_size[self.symbol]['min_qty'])
+                                if exit_qty > 0:
+                                    new_exit_orders.append({
+                                        "side": "sell" if self.direction == "buy" else "buy",
+                                        "price": exit_conf['exit_price'],
+                                        "size": exit_qty,
+                                        "orderType": "limit"
+                                    })
+                            
+                            if new_exit_orders:
+                                ret_list = batch_place_order(self.symbol, new_exit_orders)
+                                for i in range(len(ret_list)):
+                                    self.exit_list[i]['order_id'] = ret_list[i]['orderId']
+                                # 刚挂完出场单，不可能马上成交，可以等待下一次监测判断
+                                continue
+
+                # 检查出场单状态
+                for exit_conf in self.exit_list:
+                    if exit_conf['order_id'] and exit_conf['order_id'] not in pending_order_map:
+                        logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交')
+                        order_detail = query_order(self.symbol, exit_conf['order_id'])
+                        if order_detail and order_detail['state'] == 'filled':
+                            # 成交的单子就会被移除掉
+                            self.exit_list.remove(exit_conf)
+                            logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交，移除出场单')
+                            
+                            # 取消所有现有的入场挂单
+                            entry_orders_to_cancel = [order['orderId'] for order in pending_orders if 
+                                                    (self.direction == "buy" and order['side'] == "buy") or
+                                                    (self.direction == "sell" and order['side'] == "sell")]
+                            if entry_orders_to_cancel:
+                                batch_cancel_orders(self.symbol, entry_orders_to_cancel)
+                            
+                            # 重新计算并设置入场单
+                            new_entry_orders = []
+                            remaining_position = position  # 当前持仓量
+                            
+                            for entry in self.entry_list:  # 直接遍历原始列表
+                                if remaining_position >= entry['qty']:
+                                    # 如果剩余持仓大于等于该入场点应有的持仓量，不需要在此价位补单
+                                    remaining_position -= entry['qty']
+                                else:
+                                    # 需要补单的数量 = 应有持仓量 - 剩余持仓量
+                                    need_qty = entry['qty'] - remaining_position
+                                    if need_qty > 0:
+                                        new_entry_orders.append({
+                                            "side": self.direction,
+                                            "price": entry['entry_price'],
+                                            "size": round(need_qty, symbol_tick_size[self.symbol]['min_qty']),
+                                            "orderType": "limit"
+                                        })
+                                    remaining_position = 0
+                            
+                            # 批量下新的入场单
+                            if new_entry_orders:
+                                ret_list = batch_place_order(self.symbol, new_entry_orders)
+                                # 更新入场单ID
                                 for i, ret in enumerate(ret_list):
-                                    for entry in self.entry_list:
-                                        if entry['entry_price'] == float(new_orders[i]['price']):
-                                            entry['order_id'] = ret['orderId']
-                                            break
-                    else:
-                        # 如果没有挂单，则重新挂入场单
-                        order_list = [{
-                            "side": "BUY",
-                            "price": entry['entry_price'],
-                            "size": entry['qty'],
-                            "orderType": "limit"
-                        } for entry in self.entry_list]
-                        ret_list = batch_place_order(self.symbol, order_list)
-                        if ret_list:
-                            for i, ret in enumerate(ret_list):
-                                self.entry_list[i]['order_id'] = ret['orderId']
+                                    self.entry_list[i]['order_id'] = ret['orderId']
+                                logger.info(f'{self.symbol} 重新设置入场单成功: {json.dumps(new_entry_orders, ensure_ascii=False)}')
 
                 time.sleep(2)  # 每2秒检查一次
+                
             except Exception as e:
                 logger.error(f'{self.symbol} 监控价格时发生错误: {str(e)}')
-                time.sleep(2)  # 发生错误时也等待2秒
+                time.sleep(2)
                 
     def stop_monitoring(self):
         """停止价格监控"""
@@ -546,10 +578,6 @@ def handle_message():
                 "status": "error", 
                 "message": f"{symbol} 已经处于监控状态，请先停止现有监控后再重新设置"
             })
-        
-        # 如果该币种已存在但未在监控中，先停止之前的监控线程
-        if symbol in trading_pairs:
-            trading_pairs[symbol].stop_monitoring()
         
         # 创建或更新 GridTrader 实例
         trading_pairs[symbol] = GridTrader(symbol)

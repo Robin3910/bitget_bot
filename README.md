@@ -1,3 +1,12 @@
+### bitget模拟盘使用须知
+
+使用模拟盘的API，访问实盘接口（bitget只有一类接口，模拟盘和实盘的接口是一样的），
+参数中所有带“S”的参数都不需要
+
+举例：
+使用USDT而不是SUSDT，使用BTC而不是SBTC，使用USDT-FUTURES而不是SUSDT-FUTURES
+
+
 ### 如何使用？
 
 `python版本：3.6+`

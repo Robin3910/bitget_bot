@@ -3,7 +3,7 @@ API_URL = 'https://api.bitget.com'
 CONTRACT_WS_URL = 'wss://ws.bitget.com/mix/v1/stream'
 # 测试环境为test，生产环境为prd
 ENV = 'test'
-PRODUCT_TYPE = 'SUSDT-FUTURES' if ENV == 'test' else 'USDT-FUTURES'
+PRODUCT_TYPE = 'USDT-FUTURES'
 
 # http header
 CONTENT_TYPE = 'Content-Type'
