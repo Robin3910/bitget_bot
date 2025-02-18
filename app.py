@@ -239,6 +239,21 @@ def batch_cancel_orders(symbol, order_id_list):
         logger.error(f'{symbol}|批量撤销挂单失败，错误: {e}')
         return None
 
+def get_mark_price(symbol):
+    """获取标记价格"""
+    try:
+        params = {}
+        params["symbol"] = symbol
+        response = baseApi.get("/api/v2/mix/market/mark-price", params)
+        if response['code'] == bg_constants.SUCCESS:
+            return response['data'][0]['markPrice']
+        else:
+            logger.error(f'{symbol}|获取标记价格失败，错误: {response}')
+            return None
+    except BitgetAPIException as e:
+        logger.error(f'{symbol}|获取标记价格失败，错误: {e}')
+        return None
+
 # 设置持仓模式
 set_position_mode("one_way_mode")
 
@@ -275,6 +290,7 @@ class GridTrader:
         self.entry_config = ""
         self.exit_config = ""
         self.pos_for_trail = 0
+        self.trail_active_percent = 0
         self.trail_active_price = 0
         self.trail_callback = 0
         self.up_line = 0
@@ -284,6 +300,10 @@ class GridTrader:
         self.paused = False # 是否暂停
         self.running = False # 是否运行
         self.monitor_thread = None # 监控线程
+        self.loss_count = 0 # 亏损次数
+        self.trail_high_price = 0 # 移动止盈的最高价格
+        self.trail_low_price = 999999 # 移动止盈的最低价格
+        self.stop_loss_order_id = None # 止损单ID
 
         logger.info(f'{symbol} GridTrader 初始化完成')
 
@@ -306,19 +326,23 @@ class GridTrader:
                 logger.info(f'更新交易参数: {json.dumps(data, ensure_ascii=False)}')
                 self.total_usdt = float(data['total_usdt'])
                 self.every_zone_usdt = float(data['every_zone_usdt'])
-                self.zone_usdt = self.total_usdt * self.every_zone_usdt # 预期一个区间要投入的金额
                 self.loss_decrease = float(data['loss_decrease'])
                 self.direction = data['direction']
                 self.entry_config = data['entry_config']
                 self.exit_config = data['exit_config']
                 self.pos_for_trail = float(data['pos_for_trail'])
-                self.trail_active_price = float(data['trail_active_price'])
+                self.trail_active_percent = float(data['trail_active_price']) # 移动止盈的触发percent
                 self.trail_callback = float(data['trail_callback'])
                 self.up_line = float(data['up_line'])
                 self.down_line = float(data['down_line'])
+                self.zone_usdt = self.total_usdt * self.every_zone_usdt # 预期一个区间要投入的金额
+                self.trail_high_price = 0 # 移动止盈的最高价格
+                self.trail_low_price = 999999 # 移动止盈的最低价格
+                self.stop_loss_order_id = None # 止损单ID
 
                 if self.direction == "buy":
                     self.interval = self.up_line - self.down_line
+                    self.trail_active_price = self.down_line + self.interval * self.trail_active_percent
                     # 解析入场配置
                     self.entry_list = []
                     if self.entry_config:
@@ -376,7 +400,9 @@ class GridTrader:
                     # 肯定是先补齐当前价格的仓位，如果当前价格的仓位已经满足了，那就无需再补了
 
                 elif self.direction == "sell":
+                    # 做空的时候，因为预期是要往下走的，所以down_line是区间上沿的价格, up_line是区间下沿的价格
                     self.interval = self.down_line - self.up_line
+                    self.trail_active_price = self.down_line - self.interval * self.trail_active_percent
                     # 解析入场配置
                     self.entry_list = []
                     if self.entry_config:
@@ -443,6 +469,22 @@ class GridTrader:
             try:
                 # 获取当前仓位和持仓方向
                 position, hold_side = get_position(self.symbol)
+
+                # 如果发现止损单和当前仓位不一致，则需要更新止损单
+                if position > 0 and self.stop_loss_order_id is None:
+                    # 创建止损单
+                    self.stop_loss_order_id = place_order(self.symbol, "sell" if self.direction == "buy" else "buy", position, self.down_line)
+                elif self.stop_loss_order_id:
+                    # 检查止损单是否已经成交
+                    order_detail = query_order(self.symbol, self.stop_loss_order_id)
+                    if order_detail and order_detail['status'] == 'filled':
+                        # 止损单已经成交，说明该区间的逻辑结束了
+                        cancel_all_orders(self.symbol)
+                        logger.info(f"{self.symbol}|止损单已经成交，区间逻辑结束")
+                    
+                    # 如果发现止损单的仓位和当前的仓位不符合
+
+                
                 # 获取当前所有挂单
                 pending_orders = get_pending_orders(self.symbol)
                 
@@ -474,7 +516,9 @@ class GridTrader:
                             # 创建新的出场订单
                             new_exit_orders = []
                             for exit_conf in self.exit_list:
-                                exit_qty = round(position * exit_conf['percent'], symbol_tick_size[self.symbol]['min_qty'])
+                                # 用分批止盈的仓位来设计出场单
+                                # 会预留一部分仓位来做移动止盈
+                                exit_qty = round(position * (1 - self.pos_for_trail) * exit_conf['percent'], symbol_tick_size[self.symbol]['min_qty'])
                                 if exit_qty > 0:
                                     new_exit_orders.append({
                                         "side": "sell" if self.direction == "buy" else "buy",
@@ -535,6 +579,29 @@ class GridTrader:
                                     self.entry_list[i]['order_id'] = ret['orderId']
                                 logger.info(f'{self.symbol} 重新设置入场单成功: {json.dumps(new_entry_orders, ensure_ascii=False)}')
 
+                # 检测当前价格是否已经达到了移动止盈的触发点
+                mark_price = get_mark_price(self.symbol)
+                if mark_price:
+                    if self.direction == "buy":
+                        if mark_price > self.trail_active_price:
+                            logger.info(f'{self.symbol} 当前价格已经达到了移动止盈的触发点: {mark_price}')
+                            if mark_price > self.trail_high_price:
+                                self.trail_high_price = mark_price
+                        if (self.trail_high_price - mark_price) / mark_price > self.trail_callback:
+                            logger.info(f"{self.symbol}|做多|当前价格从最高点回落超过{self.trail_callback}，平仓|区间逻辑结束")
+                            # 平仓
+                            close_position(self.symbol)
+                            cancel_all_orders(self.symbol)
+                    elif self.direction == "sell":
+                        if mark_price < self.trail_active_price:
+                            logger.info(f'{self.symbol} 当前价格已经达到了移动止盈的触发点: {mark_price}')
+                            if mark_price < self.trail_low_price:
+                                self.trail_low_price = mark_price
+                        if (mark_price - self.trail_low_price) / self.trail_low_price > self.trail_callback:
+                            logger.info(f"{self.symbol}|做空|当前价格从最低点回升超过{self.trail_callback}，平仓|区间逻辑结束")
+                            # 平仓
+                            close_position(self.symbol)
+                            cancel_all_orders(self.symbol)
                 time.sleep(2)  # 每2秒检查一次
                 
             except Exception as e:
