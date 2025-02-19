@@ -19,7 +19,7 @@ app = Flask(__name__)
 # 2、需要补充一个页面，让用户可以配置API和secret，也可以手动停止策略的运行
 # 3、在页面中需要展示当前的策略运行情况，比如当前的仓位，当前的挂单，当前的止损单，当前的移动止盈单
 # 4、补充处理失败的时候，微信发出告警
-# 5、
+# 5、发现一个问题：挂单价格有限制，不能挂离当前价格太远，否则会报错，需要等价格快到了再去挂单
 
 # 配置信息
 WX_TOKEN = bg_constants.WX_TOKEN
@@ -97,9 +97,11 @@ def place_order(symbol, side, qty, price, order_type="limit"):
             return response['data']['orderId']
         else:
             logger.error(f'{symbol}|下单失败，错误: {response}')
+            send_wx_notification(f'{symbol}|下单失败', f'下单失败，错误: {response}')
             return None
     except BitgetAPIException as e:
         logger.error(f'{symbol}|下单失败，错误: {e}')
+        send_wx_notification(f'{symbol}|下单失败', f'下单失败，错误: {e}')
         return None
 
 def query_order(symbol, order_id):
@@ -491,7 +493,11 @@ class GridTrader:
                 # 如果发现止损单和当前仓位不一致，则需要更新止损单
                 if position > 0 and self.stop_loss_order_id is None:
                     # 创建止损单
-                    self.stop_loss_order_id = place_order(self.symbol, "sell" if self.direction == "buy" else "buy", position, self.down_line)
+                    self.stop_loss_order_id = place_order(self.symbol, "sell" if self.direction == "buy" else "buy", position, self.down_line, "limit")
+                    if self.stop_loss_order_id:
+                        logger.info(f"{self.symbol}|止损单已经创建: {self.stop_loss_order_id}")
+                    else:
+                        logger.error(f"{self.symbol}|止损单创建失败")
                 elif self.stop_loss_order_id:
                     # 检查止损单是否已经成交
                     order_detail = query_order(self.symbol, self.stop_loss_order_id)
@@ -500,9 +506,6 @@ class GridTrader:
                         cancel_all_orders(self.symbol)
                         logger.info(f"{self.symbol}|止损单已经成交，区间逻辑结束")
                     
-                    # 如果发现止损单的仓位和当前的仓位不符合
-
-                
                 # 获取当前所有挂单
                 pending_orders = get_pending_orders(self.symbol)
                 
@@ -564,9 +567,11 @@ class GridTrader:
                             logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交，移除出场单')
                             
                             # 取消所有现有的入场挂单
-                            entry_orders_to_cancel = [order['orderId'] for order in pending_orders if 
-                                                    (self.direction == "buy" and order['side'] == "buy") or
-                                                    (self.direction == "sell" and order['side'] == "sell")]
+                            entry_orders_to_cancel = []
+                            if pending_orders:
+                                entry_orders_to_cancel = [order['orderId'] for order in pending_orders if 
+                                                        (self.direction == "buy" and order['side'] == "buy") or
+                                                        (self.direction == "sell" and order['side'] == "sell")]
                             if entry_orders_to_cancel:
                                 batch_cancel_orders(self.symbol, entry_orders_to_cancel)
                             

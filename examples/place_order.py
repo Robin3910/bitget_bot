@@ -29,15 +29,15 @@ if __name__ == '__main__':
 # }
     try:
         params = {}
-        params["symbol"] = "ETHUSDT"
+        params["symbol"] = "BTCUSDT"
         params["marginCoin"] = "USDT"
-        params["marginMode"] = "isolated"
+        params["marginMode"] = "crossed"
         params["productType"] = "usdt-futures"
         params["side"] = "buy"
         params["orderType"] = "limit"
         params["force"] = "gtc"
-        params["price"] = "2000"
-        params["size"] = "1.5"
+        params["price"] = "97561.0"
+        params["size"] = "0.05"
         response = baseApi.post("/api/v2/mix/order/place-order", params)
         print(response)
     except BitgetAPIException as e:
