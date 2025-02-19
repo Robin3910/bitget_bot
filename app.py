@@ -14,6 +14,13 @@ from bitget.exceptions import BitgetAPIException
 
 app = Flask(__name__)
 
+# TODO 待办
+# 1、测试一下monitor_price的逻辑
+# 2、需要补充一个页面，让用户可以配置API和secret，也可以手动停止策略的运行
+# 3、在页面中需要展示当前的策略运行情况，比如当前的仓位，当前的挂单，当前的止损单，当前的移动止盈单
+# 4、补充处理失败的时候，微信发出告警
+# 5、
+
 # 配置信息
 WX_TOKEN = bg_constants.WX_TOKEN
 PRODUCT_TYPE = bg_constants.PRODUCT_TYPE
@@ -133,7 +140,7 @@ def get_position(symbol):
         params["marginCoin"] = "USDT"
         response = baseApi.get("/api/v2/mix/position/single-position", params)
         if response['code'] == bg_constants.SUCCESS and len(response['data']) > 0:
-            return response['data'][0]['total'], response['data'][0]['holdSide']
+            return float(response['data'][0]['total']), response['data'][0]['holdSide']
         else:
             logger.error(f'{symbol}|无仓位: {response}')
             return 0, None
@@ -244,7 +251,8 @@ def get_mark_price(symbol):
     try:
         params = {}
         params["symbol"] = symbol
-        response = baseApi.get("/api/v2/mix/market/mark-price", params)
+        params["productType"] = bg_constants.PRODUCT_TYPE
+        response = baseApi.get("/api/v2/mix/market/ticker", params)
         if response['code'] == bg_constants.SUCCESS:
             return response['data'][0]['markPrice']
         else:
@@ -341,6 +349,11 @@ class GridTrader:
                 self.stop_loss_order_id = None # 止损单ID
 
                 if self.direction == "buy":
+                    # ------ 上沿 up_line 100000
+                    #  ^
+                    #  |
+                    #  |
+                    # ------ 下沿 down_line 90000
                     self.interval = self.up_line - self.down_line
                     self.trail_active_price = self.down_line + self.interval * self.trail_active_percent
                     # 解析入场配置
@@ -401,6 +414,11 @@ class GridTrader:
 
                 elif self.direction == "sell":
                     # 做空的时候，因为预期是要往下走的，所以down_line是区间上沿的价格, up_line是区间下沿的价格
+                    # ------ 上沿 down_line 100000
+                    #  |
+                    #  |
+                    #  v
+                    # ------ 下沿 up_line 90000
                     self.interval = self.down_line - self.up_line
                     self.trail_active_price = self.down_line - self.interval * self.trail_active_percent
                     # 解析入场配置
@@ -477,7 +495,7 @@ class GridTrader:
                 elif self.stop_loss_order_id:
                     # 检查止损单是否已经成交
                     order_detail = query_order(self.symbol, self.stop_loss_order_id)
-                    if order_detail and order_detail['status'] == 'filled':
+                    if order_detail and order_detail['state'] == 'filled':
                         # 止损单已经成交，说明该区间的逻辑结束了
                         cancel_all_orders(self.symbol)
                         logger.info(f"{self.symbol}|止损单已经成交，区间逻辑结束")
@@ -500,7 +518,7 @@ class GridTrader:
                     if entry['order_id'] and entry['order_id'] not in pending_order_map:
                         logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交')
                         order_detail = query_order(self.symbol, entry['order_id'])
-                        if order_detail and order_detail['status'] == 'filled':
+                        if order_detail and order_detail['state'] == 'filled':
                             # 清除掉之后，下一次进来如果发现当前的入场单都是live状态，那不需要再去更新出场单
                             self.entry_list.remove(entry)
                             logger.info(f'{self.symbol} 入场单 {entry["order_id"]} 已成交，移除入场单')
@@ -529,6 +547,7 @@ class GridTrader:
                             
                             if new_exit_orders:
                                 ret_list = batch_place_order(self.symbol, new_exit_orders)
+                                # TODO 加一下成功与失败的判断
                                 for i in range(len(ret_list)):
                                     self.exit_list[i]['order_id'] = ret_list[i]['orderId']
                                 # 刚挂完出场单，不可能马上成交，可以等待下一次监测判断
@@ -539,7 +558,7 @@ class GridTrader:
                     if exit_conf['order_id'] and exit_conf['order_id'] not in pending_order_map:
                         logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交')
                         order_detail = query_order(self.symbol, exit_conf['order_id'])
-                        if order_detail and order_detail['status'] == 'filled':
+                        if order_detail and order_detail['state'] == 'filled':
                             # 成交的单子就会被移除掉
                             self.exit_list.remove(exit_conf)
                             logger.info(f'{self.symbol} 出场单 {exit_conf["order_id"]} 已成交，移除出场单')
@@ -582,7 +601,12 @@ class GridTrader:
                 # 检测当前价格是否已经达到了移动止盈的触发点
                 mark_price = get_mark_price(self.symbol)
                 if mark_price:
+                    mark_price = float(mark_price)
                     if self.direction == "buy":
+                        if mark_price < self.down_line:
+                            close_position(self.symbol)
+                            cancel_all_orders(self.symbol)
+                            logger.info(f"{self.symbol}|做多|当前价格已经达到了止损点: {mark_price}")
                         if mark_price > self.trail_active_price:
                             logger.info(f'{self.symbol} 当前价格已经达到了移动止盈的触发点: {mark_price}')
                             if mark_price > self.trail_high_price:
@@ -593,6 +617,10 @@ class GridTrader:
                             close_position(self.symbol)
                             cancel_all_orders(self.symbol)
                     elif self.direction == "sell":
+                        if mark_price > self.down_line:
+                            close_position(self.symbol)
+                            cancel_all_orders(self.symbol)
+                            logger.info(f"{self.symbol}|做空|当前价格已经达到了止损点: {mark_price}")
                         if mark_price < self.trail_active_price:
                             logger.info(f'{self.symbol} 当前价格已经达到了移动止盈的触发点: {mark_price}')
                             if mark_price < self.trail_low_price:
